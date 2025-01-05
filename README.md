@@ -1,3 +1,8 @@
+# Purpose
+The purpose of this repository/training course is to build a foundational understanding and skills for GNC topics 
+including data acquisition and filtering, fusion algorithms, basic system controllers, and then touching on more realistic and 
+advanced system controllers.
+
 # Control Systems Training Outline
 
 ## **Phase 1: Foundations**
