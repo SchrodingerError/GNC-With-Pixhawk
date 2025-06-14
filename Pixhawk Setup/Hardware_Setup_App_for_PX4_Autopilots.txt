@@ -1,0 +1,48 @@
+Apr 18, 2025  3:28:11 PM com.mathworks.hwservices.logging
+INFO: Launching HW Setup: Hardware Setup App for PX4 Autopilots for base code PX4AUTOPILOTS
+Apr 18, 2025  3:28:11 PM com.mathworks.hwservices.logging
+INFO: Initializing screen -- Hardware Setup App for PX4 Autopilots:codertarget.pixhawk.hwsetup.DownloadPX4
+Apr 18, 2025  3:28:13 PM com.mathworks.hwservices.logging
+INFO: Displaying -- Hardware Setup App for PX4 Autopilots:codertarget.pixhawk.hwsetup.DownloadPX4
+Apr 18, 2025  3:28:24 PM com.mathworks.hwservices.logging
+INFO: Initializing screen -- Hardware Setup App for PX4 Autopilots:codertarget.pixhawk.hwsetup.ValidatePX4
+Apr 18, 2025  3:28:27 PM com.mathworks.hwservices.logging
+INFO: Displaying -- Hardware Setup App for PX4 Autopilots:codertarget.pixhawk.hwsetup.ValidatePX4
+Apr 18, 2025  3:28:34 PM com.mathworks.hwservices.logging
+INFO: Initializing screen -- Hardware Setup App for PX4 Autopilots:codertarget.pixhawk.hwsetup.SetupPX4Toolchain
+Apr 18, 2025  3:28:34 PM com.mathworks.hwservices.logging
+INFO: Displaying -- Hardware Setup App for PX4 Autopilots:codertarget.pixhawk.hwsetup.SetupPX4Toolchain
+Apr 18, 2025  3:28:36 PM com.mathworks.hwservices.logging
+INFO: Initializing screen -- Hardware Setup App for PX4 Autopilots:codertarget.pixhawk.hwsetup.SelectAlgorithm
+Apr 18, 2025  3:28:36 PM com.mathworks.hwservices.logging
+INFO: Displaying -- Hardware Setup App for PX4 Autopilots:codertarget.pixhawk.hwsetup.SelectAlgorithm
+Apr 18, 2025  3:28:39 PM com.mathworks.hwservices.logging
+INFO: Initializing screen -- Hardware Setup App for PX4 Autopilots:codertarget.pixhawk.hwsetup.SelectCMAKEandHardware
+Apr 18, 2025  3:28:41 PM com.mathworks.hwservices.logging
+INFO: Displaying -- Hardware Setup App for PX4 Autopilots:codertarget.pixhawk.hwsetup.SelectCMAKEandHardware
+Apr 18, 2025  3:28:45 PM com.mathworks.hwservices.logging
+INFO: Initializing screen -- Hardware Setup App for PX4 Autopilots:codertarget.pixhawk.hwsetup.SelectPX4StartupScript
+Apr 18, 2025  3:28:46 PM com.mathworks.hwservices.logging
+INFO: Displaying -- Hardware Setup App for PX4 Autopilots:codertarget.pixhawk.hwsetup.SelectPX4StartupScript
+Apr 18, 2025  3:28:48 PM com.mathworks.hwservices.logging
+INFO: Initializing screen -- Hardware Setup App for PX4 Autopilots:codertarget.pixhawk.hwsetup.DownloadAndValidateQGC
+Apr 18, 2025  3:28:49 PM com.mathworks.hwservices.logging
+INFO: Displaying -- Hardware Setup App for PX4 Autopilots:codertarget.pixhawk.hwsetup.DownloadAndValidateQGC
+Apr 18, 2025  3:28:57 PM com.mathworks.hwservices.logging
+INFO: Initializing screen -- Hardware Setup App for PX4 Autopilots:codertarget.pixhawk.hwsetup.SelectAirframeInQGC
+Apr 18, 2025  3:28:58 PM com.mathworks.hwservices.logging
+INFO: Displaying -- Hardware Setup App for PX4 Autopilots:codertarget.pixhawk.hwsetup.SelectAirframeInQGC
+Apr 18, 2025  3:29:00 PM com.mathworks.hwservices.logging
+INFO: Initializing screen -- Hardware Setup App for PX4 Autopilots:codertarget.pixhawk.hwsetup.BuildPX4FirmwareCommon
+Apr 18, 2025  3:29:01 PM com.mathworks.hwservices.logging
+INFO: Displaying -- Hardware Setup App for PX4 Autopilots:codertarget.pixhawk.hwsetup.BuildPX4FirmwareCommon
+Apr 18, 2025  3:33:03 PM com.mathworks.hwservices.logging
+INFO: Initializing screen -- Hardware Setup App for PX4 Autopilots:codertarget.pixhawk.hwsetup.TestConnection
+Apr 18, 2025  3:33:06 PM com.mathworks.hwservices.logging
+INFO: Displaying -- Hardware Setup App for PX4 Autopilots:codertarget.pixhawk.hwsetup.TestConnection
+Apr 18, 2025  3:33:07 PM com.mathworks.hwservices.logging
+INFO: Initializing screen -- Hardware Setup App for PX4 Autopilots:codertarget.pixhawk.hwsetup.SetupComplete
+Apr 18, 2025  3:33:07 PM com.mathworks.hwservices.logging
+INFO: Displaying -- Hardware Setup App for PX4 Autopilots:codertarget.pixhawk.hwsetup.SetupComplete
+Apr 18, 2025  3:33:09 PM com.mathworks.hwservices.logging
+INFO: Exiting workflow -- Hardware Setup App for PX4 Autopilots
