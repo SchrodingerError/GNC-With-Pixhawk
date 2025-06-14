@@ -4,7 +4,6 @@ including data acquisition and filtering, fusion algorithms, basic system contro
 advanced system controllers.
 
 # Control Systems Training Outline
-
 ## **Phase 1: Foundations**
 
 ### **Lesson 1: Reading Sensor Data**
