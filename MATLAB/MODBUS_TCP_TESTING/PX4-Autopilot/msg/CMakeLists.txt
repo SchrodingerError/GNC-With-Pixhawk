@@ -222,7 +222,12 @@ set(msg_files
 	Wind.msg
 	YawEstimatorStatus.msg
 	SimulinkCustomMessage.msg
-	PlcHoldingRegisters.msg
+	PlcDiscreteInputs.msg
+	PlcInputRegisters.msg
+	PlcCoilsRead.msg
+	PlcCoilsWrite.msg
+	PlcHoldingRegistersRead.msg
+	PlcHoldingRegistersWrite.msg
 )
 list(SORT msg_files)
 
