@@ -1,5 +1,4 @@
 #include "modbus_tcp_client.h"
-#include <sys/select.h>
 
 // --- Helper: Compute maximum read response size based on configured counts.
 int ModbusTCPClient::computeMaxReadResponseSize() const {
@@ -33,12 +32,13 @@ ModbusTCPClient::ModbusTCPClient(const char* ip, int port, int numCoils, int num
       startCoils(startCoils), startDiscreteInputs(startDI), startInputRegisters(startIR), startHoldingRegisters(startHR) {
 
     // Allocate internal storage for automatic readAll()/writeAll() mode.
-    coilsRead = new bool[numCoils]();
-    coilsWrite = new bool[numCoils]();
-    discreteInputs = new bool[numDI]();
-    inputRegisters = new uint16_t[numIR]();
-    holdingRegistersRead = new uint16_t[numHR]();
-    holdingRegistersWrite = new uint16_t[numHR]();
+    coilsRead = (numCoils > 0) ? new bool[numCoils]() : nullptr;
+    coilsWrite = (numCoils > 0) ? new bool[numCoils]() : nullptr;
+    discreteInputs = (numDI > 0) ? new bool[numDI]() : nullptr;
+    inputRegisters = (numIR > 0) ? new uint16_t[numIR]() : nullptr;
+    holdingRegistersRead = (numHR > 0) ? new uint16_t[numHR]() : nullptr;
+    holdingRegistersWrite = (numHR > 0) ? new uint16_t[numHR]() : nullptr;
+
 
     // Allocate shared communication buffers.
     commRequestBufferSize = computeMaxWriteRequestSize();  // Worst-case request size.
@@ -46,8 +46,12 @@ ModbusTCPClient::ModbusTCPClient(const char* ip, int port, int numCoils, int num
     commRequestBuffer = new uint8_t[commRequestBufferSize];
     commResponseBuffer = new uint8_t[commResponseBufferSize];
 
-    // Initialize the socket mutex.
-    pthread_mutex_init(&socketMutex, NULL);
+    // Initialize the socket mutex with a recursive attribute.
+    pthread_mutexattr_t attr;
+    pthread_mutexattr_init(&attr);
+    pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+    pthread_mutex_init(&socketMutex, &attr);
+    pthread_mutexattr_destroy(&attr);
 }
 
 ModbusTCPClient::ModbusTCPClient(const char* ip, int port)
@@ -66,8 +70,12 @@ ModbusTCPClient::ModbusTCPClient(const char* ip, int port)
     commRequestBuffer = new uint8_t[commRequestBufferSize];
     commResponseBuffer = new uint8_t[commResponseBufferSize];
 
-    // Initialize the socket mutex.
-    pthread_mutex_init(&socketMutex, NULL);
+    // Initialize the socket mutex with a recursive attribute.
+    pthread_mutexattr_t attr;
+    pthread_mutexattr_init(&attr);
+    pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+    pthread_mutex_init(&socketMutex, &attr);
+    pthread_mutexattr_destroy(&attr);
 }
 
 ModbusTCPClient::~ModbusTCPClient() {
@@ -93,46 +101,134 @@ void ModbusTCPClient::setStartAddresses(int startCoils, int startDI, int startIR
 }
 
 // --- Connection Functions ---
+// bool ModbusTCPClient::connectServer() {
+//     //pthread_mutex_lock(&socketMutex);
+//     if (socketFD != -1) {
+//         //pthread_mutex_unlock(&socketMutex);
+//         return true;
+//     }
+//     for (int attempts = 0; attempts < 5; attempts++) {
+//         socketFD = socket(AF_INET, SOCK_STREAM, 0);
+//         if (socketFD < 0) {
+//             printf("MODBUS_TCP_CLIENT: Could not create socket\n");
+//             //pthread_mutex_unlock(&socketMutex);
+//             return false;
+//         }
+//         struct sockaddr_in serverAddr;
+//         serverAddr.sin_family = AF_INET;
+//         serverAddr.sin_port = htons(serverPort);
+//         inet_pton(AF_INET, serverIP, &serverAddr.sin_addr);
+//         printf("MODBUS_TCP_CLIENT: Attempting to connect (Try %d)...\n", attempts + 1);
+//         if (connect(socketFD, (struct sockaddr*)&serverAddr, sizeof(serverAddr)) == 0) {
+//             printf("MODBUS_TCP_CLIENT: Connected to %s:%d\n", serverIP, serverPort);
+//             //pthread_mutex_unlock(&socketMutex);
+//             return true;
+//         }
+//         printf("MODBUS_TCP_CLIENT: Connection failed, retrying...\n");
+//         disconnectServer();
+//         usleep(timeoutMilliseconds*1000);
+//     }
+//     //pthread_mutex_unlock(&socketMutex);
+//     return false;
+// }
+
 bool ModbusTCPClient::connectServer() {
-    pthread_mutex_lock(&socketMutex);
+    // If already connected, return true.
     if (socketFD != -1) {
-        pthread_mutex_unlock(&socketMutex);
         return true;
     }
+    
     for (int attempts = 0; attempts < 5; attempts++) {
+        // Create a new socket.
         socketFD = socket(AF_INET, SOCK_STREAM, 0);
         if (socketFD < 0) {
             printf("MODBUS_TCP_CLIENT: Could not create socket\n");
-            pthread_mutex_unlock(&socketMutex);
             return false;
         }
+        
+        // Set the socket to non-blocking mode.
+        int flags = fcntl(socketFD, F_GETFL, 0);
+        if (flags < 0) {
+            printf("MODBUS_TCP_CLIENT: fcntl F_GETFL");
+            disconnectServer();
+            return false;
+        }
+        if (fcntl(socketFD, F_SETFL, flags | O_NONBLOCK) < 0) {
+            printf("MODBUS_TCP_CLIENT: fcntl F_SETFL O_NONBLOCK");
+            disconnectServer();
+            return false;
+        }
+        
+        // Prepare the server address.
         struct sockaddr_in serverAddr;
         serverAddr.sin_family = AF_INET;
         serverAddr.sin_port = htons(serverPort);
         inet_pton(AF_INET, serverIP, &serverAddr.sin_addr);
+        
         printf("MODBUS_TCP_CLIENT: Attempting to connect (Try %d)...\n", attempts + 1);
-        if (connect(socketFD, (struct sockaddr*)&serverAddr, sizeof(serverAddr)) == 0) {
-            printf("MODBUS_TCP_CLIENT: Connected to %s:%d\n", serverIP, serverPort);
-            pthread_mutex_unlock(&socketMutex);
+        int res = connect(socketFD, (struct sockaddr*)&serverAddr, sizeof(serverAddr));
+        if (res < 0) {
+            if (errno == EINPROGRESS) {
+                // Connection is in progress, use select() to wait.
+                fd_set wfds;
+                FD_ZERO(&wfds);
+                FD_SET(socketFD, &wfds);
+                
+                struct timeval tv;
+                tv.tv_sec  = timeoutMilliseconds / 1000;
+                tv.tv_usec = (timeoutMilliseconds % 1000) * 1000;
+                
+                int sel = select(socketFD + 1, NULL, &wfds, NULL, &tv);
+                if (sel > 0) {
+                    int so_error = 0;
+                    socklen_t len = sizeof(so_error);
+                    if (getsockopt(socketFD, SOL_SOCKET, SO_ERROR, &so_error, &len) < 0) {
+                        printf("MODBUS_TCP_CLIENT: getsockopt failed\n");
+                        disconnectServer();
+                        continue;
+                    }
+                    if (so_error == 0) {
+                        // Connected successfully. Restore blocking mode.
+                        flags = fcntl(socketFD, F_GETFL, 0);
+                        fcntl(socketFD, F_SETFL, flags & ~O_NONBLOCK);
+                        printf("MODBUS_TCP_CLIENT: Connected to %s:%d\n", serverIP, serverPort);
+                        return true;
+                    } else {
+                        printf("MODBUS_TCP_CLIENT: Connect failed with error %d\n", so_error);
+                    }
+                } else if (sel == 0) {
+                    printf("MODBUS_TCP_CLIENT: Connect select timeout\n");
+                } else {
+                    printf("MODBUS_TCP_CLIENT: Select during connect failed\n");
+                }
+            } else {
+                printf("MODBUS_TCP_CLIENT: Connect error\n");
+            }
+        } else {
+            // Unexpected immediate success in non-blocking mode.
+            flags = fcntl(socketFD, F_GETFL, 0);
+            fcntl(socketFD, F_SETFL, flags & ~O_NONBLOCK);
+            printf("MODBUS_TCP_CLIENT: Connected immediately to %s:%d\n", serverIP, serverPort);
             return true;
         }
+        
+        // If connection failed, disconnect and wait before retrying.
         printf("MODBUS_TCP_CLIENT: Connection failed, retrying...\n");
-        pthread_mutex_unlock(&socketMutex);
         disconnectServer();
-        usleep(100000);
+        usleep(timeoutMilliseconds * 1000);
     }
-    pthread_mutex_unlock(&socketMutex);
     return false;
 }
 
 void ModbusTCPClient::disconnectServer() {
-    pthread_mutex_lock(&socketMutex);
+    ////pthread_mutex_lock(&socketMutex);
     if (socketFD != -1) {
+        shutdown(socketFD, SHUT_RDWR);
         close(socketFD);
         socketFD = -1;
         printf("MODBUS_TCP_CLIENT: Disconnected from server\n");
     }
-    pthread_mutex_unlock(&socketMutex);
+    //thread_mutex_unlock(&socketMutex);
 }
 
 bool ModbusTCPClient::isConnected() const {
@@ -150,7 +246,7 @@ void ModbusTCPClient::setTimeout(int milliseconds) {
 }
 
 bool ModbusTCPClient::sendRequest(uint8_t* request, int requestSize) {
-    if (socketFD == -1) {
+    if (!isConnected()) {
         printf("MODBUS_TCP_CLIENT: Not connected. Cannot send request.\n");
         return false;
     }
@@ -180,6 +276,11 @@ bool ModbusTCPClient::receiveResponse(uint8_t* response, int expectedSize) {
         } else if (ready < 0) {
             printf("MODBUS_TCP_CLIENT: Select failed. Disconnecting...\n");
             disconnectServer();
+            return false;
+        }
+        // Make sure we are still connected before we do a read to prevent a hardfault
+        if (!isConnected()) {
+            printf("MODBUS_TCP_CLIENT: Connection lost while reading. Disconnecting...\n");
             return false;
         }
         int bytesReceived = read(socketFD, response + totalBytesReceived, expectedSize - totalBytesReceived);
@@ -262,33 +363,33 @@ void ModbusTCPClient::buildWriteMultipleRequest(uint8_t* buffer, ModbusFunction 
 // --- High-Level Read/Write Functions ---
 
 ModbusError ModbusTCPClient::readCoil(int address, bool &coilState) {
-    pthread_mutex_lock(&socketMutex);
+    //pthread_mutex_lock(&socketMutex);
     buildReadRequest(commRequestBuffer, ModbusFunction::READ_COIL, address, 1);
     if (!sendRequest(commRequestBuffer, 12)) {
-        pthread_mutex_unlock(&socketMutex);    
+        //pthread_mutex_unlock(&socketMutex);    
         return ModbusError::TIMEOUT;
     }
     // Expect 10 bytes: header (9 bytes) + 1 byte data
     int expectedSize = 9 + 1;
     if (!receiveResponse(commResponseBuffer, expectedSize)) {
-        pthread_mutex_unlock(&socketMutex);
+        //pthread_mutex_unlock(&socketMutex);
         return ModbusError::TIMEOUT;
     }
         
     // Handle MODBUS exception responses (0x80 + function code)
     if (commResponseBuffer[7] & 0x80) {
         printf("MODBUS_TCP_CLIENT: Exception Code %02X\n", commResponseBuffer[8]);
-        pthread_mutex_unlock(&socketMutex);
+        //pthread_mutex_unlock(&socketMutex);
         return ModbusError::EXCEPTION_RESPONSE;
     }
     // Ensure the function code in the response matches the request.
     if (commResponseBuffer[7] != static_cast<uint8_t>(ModbusFunction::READ_COIL)) {
-        pthread_mutex_unlock(&socketMutex);    
+        //pthread_mutex_unlock(&socketMutex);    
         return ModbusError::INVALID_RESPONSE;
     }
     // Set the internal coil state from the response    
     coilState = (commResponseBuffer[9] & 0x01) != 0;
-    pthread_mutex_unlock(&socketMutex);
+    //pthread_mutex_unlock(&socketMutex);
     return ModbusError::NONE;
 }
 
@@ -297,28 +398,28 @@ ModbusError ModbusTCPClient::readMultipleCoils(int address, int count, bool coil
         printf("MODBUS_TCP_CLIENT: Invalid coil count (1-2000 allowed)\n");
         return ModbusError::INVALID_RESPONSE;
     }
-    pthread_mutex_lock(&socketMutex);
+    //pthread_mutex_lock(&socketMutex);
     buildReadRequest(commRequestBuffer, ModbusFunction::READ_COIL, address, count);
     if (!sendRequest(commRequestBuffer, 12)) {
-        pthread_mutex_unlock(&socketMutex);
+        //pthread_mutex_unlock(&socketMutex);
         return ModbusError::TIMEOUT;
     }
     // Expected response size: fixed header (9 bytes) + variable byte count.
     int byteCount = (count + 7) / 8; // 1 byte per 8 coils
     int expectedSize = 9 + byteCount;
     if (!receiveResponse(commResponseBuffer, expectedSize)) {
-        pthread_mutex_unlock(&socketMutex);
+        //pthread_mutex_unlock(&socketMutex);
         return ModbusError::TIMEOUT;
     }
     // Handle MODBUS exception responses (0x80 + function code)
     if (commResponseBuffer[7] & 0x80) {
         printf("MODBUS_TCP_CLIENT: MODBUS Exception Code %02X\n", commResponseBuffer[8]);
-        pthread_mutex_unlock(&socketMutex);
+        //pthread_mutex_unlock(&socketMutex);
         return ModbusError::EXCEPTION_RESPONSE;
     }
     // Ensure the function code in the response matches the request.
     if (commResponseBuffer[7] != static_cast<uint8_t>(ModbusFunction::READ_COIL)) {
-        pthread_mutex_unlock(&socketMutex);    
+        //pthread_mutex_unlock(&socketMutex);    
         return ModbusError::INVALID_RESPONSE;
     }
     // Extract coil values: data starts at index 9.
@@ -327,38 +428,38 @@ ModbusError ModbusTCPClient::readMultipleCoils(int address, int count, bool coil
         int bitIndex = i % 8;
         coilStates[i] = (commResponseBuffer[byteIndex] >> bitIndex) & 0x01;
     }
-    pthread_mutex_unlock(&socketMutex);
+    //pthread_mutex_unlock(&socketMutex);
     return ModbusError::NONE;
 }
 
 ModbusError ModbusTCPClient::readDiscreteInput(int address, bool &discreteInput) {
-    pthread_mutex_lock(&socketMutex);
+    //pthread_mutex_lock(&socketMutex);
     // Build a request for one discrete input (quantity = 1)
     buildReadRequest(commRequestBuffer, ModbusFunction::READ_DISCRETE_INPUT, address, 1);
     if (!sendRequest(commRequestBuffer, 12)) {
-        pthread_mutex_unlock(&socketMutex);
+        //pthread_mutex_unlock(&socketMutex);
         return ModbusError::TIMEOUT;
     }
     // Expect 10 bytes: header (9 bytes) + 1 byte data
     int expectedSize = 9 + 1;
     if (!receiveResponse(commResponseBuffer, expectedSize)) {
-        pthread_mutex_unlock(&socketMutex);
+        //pthread_mutex_unlock(&socketMutex);
         return ModbusError::TIMEOUT;
     }
     // Check for MODBUS exception response
     if (commResponseBuffer[7] & 0x80) {
         printf("MODBUS_TCP_CLIENT: Exception Code %02X\n", commResponseBuffer[8]);
-        pthread_mutex_unlock(&socketMutex);
+        //pthread_mutex_unlock(&socketMutex);
         return ModbusError::EXCEPTION_RESPONSE;
     }
     // Validate function code
     if (commResponseBuffer[7] != static_cast<uint8_t>(ModbusFunction::READ_DISCRETE_INPUT)) {
-        pthread_mutex_unlock(&socketMutex);
+        //pthread_mutex_unlock(&socketMutex);
         return ModbusError::INVALID_RESPONSE;
     }
     // Extract the discrete input state (first bit of the data byte at index 9)
     discreteInput = (commResponseBuffer[9] & 0x01) != 0;
-    pthread_mutex_unlock(&socketMutex);
+    //pthread_mutex_unlock(&socketMutex);
     return ModbusError::NONE;
 }
 
@@ -367,26 +468,26 @@ ModbusError ModbusTCPClient::readMultipleDiscreteInputs(int address, int count, 
         printf("MODBUS_TCP_CLIENT: Invalid discrete input count (1- allowed)\n");
         return ModbusError::INVALID_RESPONSE;
     }
-    pthread_mutex_lock(&socketMutex);
+    //pthread_mutex_lock(&socketMutex);
     buildReadRequest(commRequestBuffer, ModbusFunction::READ_DISCRETE_INPUT, address, count);
     if (!sendRequest(commRequestBuffer, 12)) {
-        pthread_mutex_unlock(&socketMutex);
+        //pthread_mutex_unlock(&socketMutex);
         return ModbusError::TIMEOUT;
     }
     // Expected response: 9-byte header + ceil(count/8) bytes of data
     int byteCount = (count + 7) / 8;
     int expectedSize = 9 + byteCount;
     if (!receiveResponse(commResponseBuffer, expectedSize)) {
-        pthread_mutex_unlock(&socketMutex);
+        //pthread_mutex_unlock(&socketMutex);
         return ModbusError::TIMEOUT;
     }
     if (commResponseBuffer[7] & 0x80) {
         printf("MODBUS_TCP_CLIENT: Exception Code %02X\n", commResponseBuffer[8]);
-        pthread_mutex_unlock(&socketMutex);
+        //pthread_mutex_unlock(&socketMutex);
         return ModbusError::EXCEPTION_RESPONSE;
     }
     if (commResponseBuffer[7] != static_cast<uint8_t>(ModbusFunction::READ_DISCRETE_INPUT)) {
-        pthread_mutex_unlock(&socketMutex);
+        //pthread_mutex_unlock(&socketMutex);
         return ModbusError::INVALID_RESPONSE;
     }
     // Extract each discrete input bit from the data starting at index 9
@@ -395,35 +496,35 @@ ModbusError ModbusTCPClient::readMultipleDiscreteInputs(int address, int count, 
         int bitIndex = i % 8;
         discreteInputsArray[i] = (commResponseBuffer[byteIndex] >> bitIndex) & 0x01;
     }
-    pthread_mutex_unlock(&socketMutex);
+    //pthread_mutex_unlock(&socketMutex);
     return ModbusError::NONE;
 }
 
 ModbusError ModbusTCPClient::readHoldingRegister(int address, uint16_t &holdingRegister) {
-    pthread_mutex_lock(&socketMutex);
+    //pthread_mutex_lock(&socketMutex);
     buildReadRequest(commRequestBuffer, ModbusFunction::READ_HOLDING_REGISTER, address, 1);
     if (!sendRequest(commRequestBuffer, 12)) {
-        pthread_mutex_unlock(&socketMutex);
+        //pthread_mutex_unlock(&socketMutex);
         return ModbusError::TIMEOUT;
     }
     // For one register, expect 9-byte header + 2 bytes data = 11 bytes total
     int expectedSize = 9 + 2;
     if (!receiveResponse(commResponseBuffer, expectedSize)) {
-        pthread_mutex_unlock(&socketMutex);
+        //pthread_mutex_unlock(&socketMutex);
         return ModbusError::TIMEOUT;
     }
     if (commResponseBuffer[7] & 0x80) {
         printf("MODBUS_TCP_CLIENT: Exception Code %02X\n", commResponseBuffer[8]);
-        pthread_mutex_unlock(&socketMutex);
+        //pthread_mutex_unlock(&socketMutex);
         return ModbusError::EXCEPTION_RESPONSE;
     }
     if (commResponseBuffer[7] != static_cast<uint8_t>(ModbusFunction::READ_HOLDING_REGISTER)) {
-        pthread_mutex_unlock(&socketMutex);    
+        //pthread_mutex_unlock(&socketMutex);    
         return ModbusError::INVALID_RESPONSE;
     }
     // Extract the register value (big-endian: data at indices 9 and 10)
     holdingRegister = (commResponseBuffer[9] << 8) | commResponseBuffer[10];
-    pthread_mutex_unlock(&socketMutex);
+    //pthread_mutex_unlock(&socketMutex);
     return ModbusError::NONE;
 }
 
@@ -432,59 +533,59 @@ ModbusError ModbusTCPClient::readMultipleHoldingRegisters(int address, int count
         printf("MODBUS_TCP_CLIENT: Invalid holding register count (1-125 allowed)\n");
         return ModbusError::INVALID_RESPONSE;
     }
-    pthread_mutex_lock(&socketMutex);
+    //pthread_mutex_lock(&socketMutex);
     buildReadRequest(commRequestBuffer, ModbusFunction::READ_HOLDING_REGISTER, address, count);
     if (!sendRequest(commRequestBuffer, 12)) {
-        pthread_mutex_unlock(&socketMutex);
+        //pthread_mutex_unlock(&socketMutex);
         return ModbusError::TIMEOUT;
     }
     // For multiple registers: expected size = 9 + (count * 2)
     int expectedSize = 9 + (count * 2);
     if (!receiveResponse(commResponseBuffer, expectedSize)) {
-        pthread_mutex_unlock(&socketMutex);
+        //pthread_mutex_unlock(&socketMutex);
         return ModbusError::TIMEOUT;
     }
     if (commResponseBuffer[7] & 0x80) {
         printf("MODBUS_TCP_CLIENT: Exception Code %02X\n", commResponseBuffer[8]);
-        pthread_mutex_unlock(&socketMutex);
+        //pthread_mutex_unlock(&socketMutex);
         return ModbusError::EXCEPTION_RESPONSE;
     }
     if (commResponseBuffer[7] != static_cast<uint8_t>(ModbusFunction::READ_HOLDING_REGISTER)) {
-        pthread_mutex_unlock(&socketMutex);
+        //pthread_mutex_unlock(&socketMutex);
         return ModbusError::INVALID_RESPONSE;
     }
     // Extract each register value (each register is 2 bytes, big-endian)
     for (int i = 0; i < count; i++) {
         holdingRegistersArray[i] = (commResponseBuffer[9 + (i * 2)] << 8) | commResponseBuffer[10 + (i * 2)];
     }
-    pthread_mutex_unlock(&socketMutex);
+    //pthread_mutex_unlock(&socketMutex);
     return ModbusError::NONE;
 }
 
 ModbusError ModbusTCPClient::readInputRegister(int address, uint16_t &inputRegister) {
-    pthread_mutex_lock(&socketMutex);
+    //pthread_mutex_lock(&socketMutex);
     buildReadRequest(commRequestBuffer, ModbusFunction::READ_INPUT_REGISTER, address, 1);
     if (!sendRequest(commRequestBuffer, 12)) {
-        pthread_mutex_unlock(&socketMutex);
+        //pthread_mutex_unlock(&socketMutex);
         return ModbusError::TIMEOUT;
     }
     // For one input register: expected size = 9 + 2 = 11 bytes
     int expectedSize = 9 + 2;
     if (!receiveResponse(commResponseBuffer, expectedSize)) {
-        pthread_mutex_unlock(&socketMutex);
+        //pthread_mutex_unlock(&socketMutex);
         return ModbusError::TIMEOUT;
     }
     if (commResponseBuffer[7] & 0x80) {
         printf("MODBUS_TCP_CLIENT: Exception Code %02X\n", commResponseBuffer[8]);
-        pthread_mutex_unlock(&socketMutex);
+        //pthread_mutex_unlock(&socketMutex);
         return ModbusError::EXCEPTION_RESPONSE;
     }
     if (commResponseBuffer[7] != static_cast<uint8_t>(ModbusFunction::READ_INPUT_REGISTER)) {
-        pthread_mutex_unlock(&socketMutex);
+        //pthread_mutex_unlock(&socketMutex);
         return ModbusError::INVALID_RESPONSE;
     }
     inputRegister = (commResponseBuffer[9] << 8) | commResponseBuffer[10];
-    pthread_mutex_unlock(&socketMutex);
+    //pthread_mutex_unlock(&socketMutex);
     return ModbusError::NONE;
 }
 
@@ -493,63 +594,63 @@ ModbusError ModbusTCPClient::readMultipleInputRegisters(int address, int count, 
         printf("MODBUS_TCP_CLIENT: Invalid input register count (1-125 allowed)\n");
         return ModbusError::INVALID_RESPONSE;
     }
-    pthread_mutex_lock(&socketMutex);
+    //pthread_mutex_lock(&socketMutex);
     buildReadRequest(commRequestBuffer, ModbusFunction::READ_INPUT_REGISTER, address, count);
     if (!sendRequest(commRequestBuffer, 12)) {
-        pthread_mutex_unlock(&socketMutex);
+        //pthread_mutex_unlock(&socketMutex);
         return ModbusError::TIMEOUT;
     }
     // For multiple registers: expected size = 9 + (count * 2)
     int expectedSize = 9 + (count * 2);
     if (!receiveResponse(commResponseBuffer, expectedSize)) {
-        pthread_mutex_unlock(&socketMutex);
+        //pthread_mutex_unlock(&socketMutex);
         return ModbusError::TIMEOUT;
     }
     if (commResponseBuffer[7] & 0x80) {
         printf("MODBUS_TCP_CLIENT: Exception Code %02X\n", commResponseBuffer[8]);
-        pthread_mutex_unlock(&socketMutex);
+        //pthread_mutex_unlock(&socketMutex);
         return ModbusError::EXCEPTION_RESPONSE;
     }
     if (commResponseBuffer[7] != static_cast<uint8_t>(ModbusFunction::READ_INPUT_REGISTER)) {
-        pthread_mutex_unlock(&socketMutex);
+        //pthread_mutex_unlock(&socketMutex);
         return ModbusError::INVALID_RESPONSE;
     }
     // Extract each register value (each register is 2 bytes, big-endian)
     for (int i = 0; i < count; i++) {
         inputRegistersArray[i] = (commResponseBuffer[9 + (i * 2)] << 8) | commResponseBuffer[10 + (i * 2)];
     }
-    pthread_mutex_unlock(&socketMutex);
+    //pthread_mutex_unlock(&socketMutex);
     return ModbusError::NONE;
 }
 
 ModbusError ModbusTCPClient::writeCoil(int address, bool value) {
-    pthread_mutex_lock(&socketMutex);
+    //pthread_mutex_lock(&socketMutex);
     buildWriteSingleRequest(commRequestBuffer, ModbusFunction::WRITE_SINGLE_COIL, address, value ? 0xFF00 : 0x0000);
     if (!sendRequest(commRequestBuffer, 12)) {
-        pthread_mutex_unlock(&socketMutex);
+        //pthread_mutex_unlock(&socketMutex);
         return ModbusError::TIMEOUT;
     }
     if (!receiveResponse(commResponseBuffer, 12)) {
-        pthread_mutex_unlock(&socketMutex);
+        //pthread_mutex_unlock(&socketMutex);
         return ModbusError::TIMEOUT;
     }
     for (int i = 0; i < 12; i++) {
         if (commRequestBuffer[i] != commResponseBuffer[i]) {
             printf("MODBUS_TCP_CLIENT: Response does not match request!\n");
-            pthread_mutex_unlock(&socketMutex);
+            //pthread_mutex_unlock(&socketMutex);
             return ModbusError::INVALID_RESPONSE;
         }
     }
-    pthread_mutex_unlock(&socketMutex);
+    //pthread_mutex_unlock(&socketMutex);
     return ModbusError::NONE;
 }
 
 ModbusError ModbusTCPClient::writeMultipleCoils(int address, int count, const bool values[]) {
-    pthread_mutex_lock(&socketMutex);
+    //pthread_mutex_lock(&socketMutex);
 
     if (count < 1 || count > numCoils) {
         printf("MODBUS_TCP_CLIENT: Invalid coil count (1-%d allowed)\n", numCoils);
-        pthread_mutex_unlock(&socketMutex);
+        //pthread_mutex_unlock(&socketMutex);
         return ModbusError::INVALID_RESPONSE;
     }
 
@@ -572,14 +673,14 @@ ModbusError ModbusTCPClient::writeMultipleCoils(int address, int count, const bo
     buildWriteMultipleRequest(commRequestBuffer, ModbusFunction::WRITE_MULTIPLE_COILS, address, count, coilData, byteCount);
     // Send the request.
     if (!sendRequest(commRequestBuffer, requestSize)) {
-        pthread_mutex_unlock(&socketMutex);
+        //pthread_mutex_unlock(&socketMutex);
         return ModbusError::TIMEOUT;
     }
 
     // The expected response size for a write multiple coils request is always 12 bytes.
     int expectedResponseSize = 12;
     if (!receiveResponse(commResponseBuffer, expectedResponseSize)) {
-        pthread_mutex_unlock(&socketMutex);
+        //pthread_mutex_unlock(&socketMutex);
         return ModbusError::TIMEOUT;
     }
 
@@ -589,45 +690,45 @@ ModbusError ModbusTCPClient::writeMultipleCoils(int address, int count, const bo
         if (i == 5) continue;  // Skip the length field.
         if (commRequestBuffer[i] != commResponseBuffer[i]) {
             printf("MODBUS_TCP_CLIENT: Response does not match request at byte %d!\n", i);
-            pthread_mutex_unlock(&socketMutex);
+            //pthread_mutex_unlock(&socketMutex);
             return ModbusError::INVALID_RESPONSE;
         }
     }
-    pthread_mutex_unlock(&socketMutex);
+    //pthread_mutex_unlock(&socketMutex);
     return ModbusError::NONE;
 }
 
 ModbusError ModbusTCPClient::writeHoldingRegister(int address, uint16_t value) {
-    pthread_mutex_lock(&socketMutex);
+    //pthread_mutex_lock(&socketMutex);
     // Build the write single holding register request.
     buildWriteSingleRequest(commRequestBuffer, ModbusFunction::WRITE_SINGLE_HOLDING_REGISTER, address, value);
     // Send the 12-byte request.
     if (!sendRequest(commRequestBuffer, 12)) {
-        pthread_mutex_unlock(&socketMutex);
+        //pthread_mutex_unlock(&socketMutex);
         return ModbusError::TIMEOUT;
     }
     // Expect a full 12-byte echo response.
     if (!receiveResponse(commResponseBuffer, 12)) {
-        pthread_mutex_unlock(&socketMutex);
+        //pthread_mutex_unlock(&socketMutex);
         return ModbusError::TIMEOUT;
     }
     // Validate that the entire 12-byte response matches the request.
     for (int i = 0; i < 12; i++) {
         if (commRequestBuffer[i] != commResponseBuffer[i]) {
             printf("MODBUS_TCP_CLIENT: Response does not match request at byte %d!\n", i);
-            pthread_mutex_unlock(&socketMutex);
+            //pthread_mutex_unlock(&socketMutex);
             return ModbusError::INVALID_RESPONSE;
         }
     }
-    pthread_mutex_unlock(&socketMutex);
+    //pthread_mutex_unlock(&socketMutex);
     return ModbusError::NONE;
 }
 
 ModbusError ModbusTCPClient::writeMultipleHoldingRegisters(int address, int count, const uint16_t values[]) {
-    pthread_mutex_lock(&socketMutex);
+    //pthread_mutex_lock(&socketMutex);
     if (count < 1 || count > numHoldingRegisters) {
         printf("MODBUS_TCP_CLIENT: Invalid register count (1-%d allowed)\n", numHoldingRegisters);
-        pthread_mutex_unlock(&socketMutex);
+        //pthread_mutex_unlock(&socketMutex);
         return ModbusError::INVALID_RESPONSE;
     }
     // Each register is 2 bytes.
@@ -644,13 +745,13 @@ ModbusError ModbusTCPClient::writeMultipleHoldingRegisters(int address, int coun
     buildWriteMultipleRequest(commRequestBuffer, ModbusFunction::WRITE_MULTIPLE_HOLDING_REGISTERS, address, count, registerData, byteCount);
     // Send the request.
     if (!sendRequest(commRequestBuffer, requestSize)) {
-        pthread_mutex_unlock(&socketMutex);
+        //pthread_mutex_unlock(&socketMutex);
         return ModbusError::TIMEOUT;
     }
     // The expected response size for a write multiple holding registers request is 12 bytes.
     int expectedResponseSize = 12;
     if (!receiveResponse(commResponseBuffer, expectedResponseSize)) {
-        pthread_mutex_unlock(&socketMutex);
+        //pthread_mutex_unlock(&socketMutex);
         return ModbusError::TIMEOUT;
     }
     // Validate the response: Compare the first 10 bytes, skipping byte 5 (length field).
@@ -658,16 +759,24 @@ ModbusError ModbusTCPClient::writeMultipleHoldingRegisters(int address, int coun
         if (i == 5) continue;  // Skip the length field.
         if (commRequestBuffer[i] != commResponseBuffer[i]) {
             printf("MODBUS_TCP_CLIENT: Response does not match request at byte %d!\n", i);
-            pthread_mutex_unlock(&socketMutex);
+            //pthread_mutex_unlock(&socketMutex);
             return ModbusError::INVALID_RESPONSE;
         }
     }
-    pthread_mutex_unlock(&socketMutex);
+    //pthread_mutex_unlock(&socketMutex);
     return ModbusError::NONE;
 }
 
 ModbusError ModbusTCPClient::readAll() {
     // For brevity, call low-level functions that update internal storage.
+    printf("readAll()\n");
+    if (!isConnected()) {
+        printf("MODBUS_TCP_CLIENT: Not connected when readAll() called. Connecting...");
+        if (connectServer()) {
+            printf("MODBUS_TCP_CLIENT: Failed to connect to MODBUS server\n");
+        }
+        return ModbusError::CONNECTION_LOST;
+    }
     ModbusError error = ModbusError::NONE;
     if (coilsRead) {
         error = readMultipleCoils(startCoils, numCoils, coilsRead);
@@ -688,6 +797,13 @@ ModbusError ModbusTCPClient::readAll() {
 }
 
 ModbusError ModbusTCPClient::writeAll() {
+    if (!isConnected()) {
+        printf("MODBUS_TCP_CLIENT: Not connected when readAll() called. Connecting...");
+        if (connectServer()) {
+            printf("MODBUS_TCP_CLIENT: Failed to connect to MODBUS server\n");
+        }
+        return ModbusError::CONNECTION_LOST;
+    }
     ModbusError error = ModbusError::NONE;
     if (coilsWrite) {
         error = writeMultipleCoils(startCoils, numCoils, coilsWrite);
@@ -735,4 +851,80 @@ uint16_t ModbusTCPClient::getDesiredHoldingRegister(int address) const {
 
 uint16_t ModbusTCPClient::getInputRegister(int address) const {
     return (address >= 0 && address < numInputRegisters) ? inputRegisters[address] : 0;
+}
+
+ModbusError ModbusTCPClient::getMultipleDiscreteInputs(int startAddress, int count, bool* destination) const {
+    // Validate inputs
+    if (startAddress < 0 || count <= 0 || destination == nullptr) {
+        return ModbusError::INVALID_REQUEST;
+    }
+
+    // Check if the range is within bounds
+    if (startAddress + count > numDiscreteInputs) {
+        return ModbusError::INVALID_REQUEST;
+    }
+
+    // Copy the data manually
+    for (int i = 0; i < count; ++i) {
+        destination[i] = discreteInputs[startAddress + i];
+    }
+
+    return ModbusError::NONE;
+}
+
+ModbusError ModbusTCPClient::getMultipleCoils(int startAddress, int count, bool* destination) const {
+    // Validate inputs
+    if (startAddress < 0 || count <= 0 || destination == nullptr) {
+        return ModbusError::INVALID_REQUEST;
+    }
+
+    // Check if the range is within bounds
+    if (startAddress + count > numCoils) {
+        return ModbusError::INVALID_REQUEST;
+    }
+
+    // Copy the data manually
+    for (int i = 0; i < count; ++i) {
+        destination[i] = coilsRead[startAddress + i];
+    }
+
+    return ModbusError::NONE;
+}
+
+ModbusError ModbusTCPClient::getMultipleInputRegisters(int startAddress, int count, uint16_t* destination) const {
+    // Validate inputs
+    if (startAddress < 0 || count <= 0 || destination == nullptr) {
+        return ModbusError::INVALID_REQUEST;
+    }
+
+    // Check if the range is within bounds
+    if (startAddress + count > numInputRegisters) {
+        return ModbusError::INVALID_REQUEST;
+    }
+
+    // Copy the data manually
+    for (int i = 0; i < count; ++i) {
+        destination[i] = inputRegisters[startAddress + i];
+    }
+
+    return ModbusError::NONE;
+}
+
+ModbusError ModbusTCPClient::getMultipleHoldingRegisters(int startAddress, int count, uint16_t* destination) const {
+    // Validate inputs
+    if (startAddress < 0 || count <= 0 || destination == nullptr) {
+        return ModbusError::INVALID_REQUEST;
+    }
+
+    // Check if the range is within bounds
+    if (startAddress + count > numHoldingRegisters) {
+        return ModbusError::INVALID_REQUEST;
+    }
+
+    // Copy the data manually
+    for (int i = 0; i < count; ++i) {
+        destination[i] = holdingRegistersRead[startAddress + i];
+    }
+
+    return ModbusError::NONE;
 }

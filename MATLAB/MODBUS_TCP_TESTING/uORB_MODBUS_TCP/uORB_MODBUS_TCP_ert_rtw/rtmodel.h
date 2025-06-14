@@ -7,9 +7,9 @@
 //
 // Code generated for Simulink model 'uORB_MODBUS_TCP'.
 //
-// Model version                  : 1.16
+// Model version                  : 1.22
 // Simulink Coder version         : 24.1 (R2024a) 19-Nov-2023
-// C/C++ source code generated on : Sat Mar 22 17:15:30 2025
+// C/C++ source code generated on : Sat Apr 12 20:53:52 2025
 //
 // Target selection: ert.tlc
 // Embedded hardware selection: ARM Compatible->ARM Cortex

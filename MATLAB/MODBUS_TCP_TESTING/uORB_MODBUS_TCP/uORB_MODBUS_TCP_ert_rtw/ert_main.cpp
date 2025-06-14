@@ -7,9 +7,9 @@
 //
 // Code generated for Simulink model 'uORB_MODBUS_TCP'.
 //
-// Model version                  : 1.16
+// Model version                  : 1.22
 // Simulink Coder version         : 24.1 (R2024a) 19-Nov-2023
-// C/C++ source code generated on : Sat Mar 22 17:15:30 2025
+// C/C++ source code generated on : Sat Apr 12 20:53:52 2025
 //
 // Target selection: ert.tlc
 // Embedded hardware selection: ARM Compatible->ARM Cortex
@@ -36,22 +36,63 @@ volatile boolean_T stopRequested = false;
 volatile boolean_T runModel = true;
 px4_sem_t stopSem;
 px4_sem_t baserateTaskSem;
+px4_sem_t subrateTaskSem[1];
+int taskId[1];
 pthread_t schedulerThread;
 pthread_t baseRateThread;
 void *threadJoinStatus;
 int terminatingmodel = 0;
+pthread_t subRateThread[1];
+int subratePriority[1];
+void *subrateTask(void *arg)
+{
+  int tid = *((int *) arg);
+  int subRateId;
+  subRateId = tid + 1;
+  while (runModel) {
+    px4_sem_wait(&subrateTaskSem[tid]);
+    if (terminatingmodel)
+      break;
+
+#ifdef MW_RTOS_DEBUG
+
+    printf(" -subrate task %d semaphore received\n", subRateId);
+
+#endif
+
+    uORB_MODBUS_TCP_step(subRateId);
+
+    // Get model outputs here
+  }
+
+  pthread_exit((void *)0);
+  return NULL;
+}
+
 void *baseRateTask(void *arg)
 {
   runModel = (rtmGetErrorStatus(uORB_MODBUS_TCP_M) == (nullptr));
   while (runModel) {
     px4_sem_wait(&baserateTaskSem);
-    uORB_MODBUS_TCP_step();
+
+#ifdef MW_RTOS_DEBUG
+
+    printf("*base rate task semaphore received\n");
+    fflush(stdout);
+
+#endif
+
+    if (rtmStepTask(uORB_MODBUS_TCP_M, 1)
+        ) {
+      px4_sem_post(&subrateTaskSem[0]);
+    }
+
+    uORB_MODBUS_TCP_step(0);
 
     // Get model outputs here
     stopRequested = !((rtmGetErrorStatus(uORB_MODBUS_TCP_M) == (nullptr)));
   }
 
-  runModel = 0;
   terminateTask(arg);
   pthread_exit((void *)0);
   return NULL;
@@ -70,6 +111,20 @@ void *terminateTask(void *arg)
   terminatingmodel = 1;
 
   {
+    int i;
+
+    // Signal all periodic tasks to complete
+    for (i=0; i<1; i++) {
+      CHECK_STATUS(px4_sem_post(&subrateTaskSem[i]), 0, "px4_sem_post");
+      CHECK_STATUS(px4_sem_destroy(&subrateTaskSem[i]), 0, "px4_sem_destroy");
+    }
+
+    // Wait for all periodic tasks to complete
+    for (i=0; i<1; i++) {
+      CHECK_STATUS(pthread_join(subRateThread[i], &threadJoinStatus), 0,
+                   "pthread_join");
+    }
+
     runModel = 0;
   }
 
@@ -83,6 +138,7 @@ void *terminateTask(void *arg)
 
 int px4_simulink_app_task_main (int argc, char *argv[])
 {
+  subratePriority[0] = 249;
   px4_simulink_app_control_MAVLink();
   rtmSetErrorStatus(uORB_MODBUS_TCP_M, 0);
 
@@ -90,7 +146,7 @@ int px4_simulink_app_task_main (int argc, char *argv[])
   uORB_MODBUS_TCP_initialize();
 
   // Call RTOS Initialization function
-  nuttxRTOSInit(5.0, 0);
+  nuttxRTOSInit(0.25, 1);
 
   // Wait for stop semaphore
   px4_sem_wait(&stopSem);

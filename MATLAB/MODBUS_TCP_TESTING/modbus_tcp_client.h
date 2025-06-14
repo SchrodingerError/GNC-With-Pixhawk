@@ -4,8 +4,10 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
+#include <sys/select.h>
 #include <pthread.h>  // Use mutexes
 
 // Enum class for MODBUS function codes
@@ -54,12 +56,18 @@ public:
     // Getters and setters for data values (if using the automatic mode).
     void setCoil(int address, bool value);
     void setHoldingRegister(int address, uint16_t value);
+
+    bool getDiscreteInput(int address) const;
     bool getCoil(int address) const;
     bool getDesiredCoil(int address) const;
-    bool getDiscreteInput(int address) const;
+    uint16_t getInputRegister(int address) const;
     uint16_t getHoldingRegister(int address) const;
     uint16_t getDesiredHoldingRegister(int address) const;
-    uint16_t getInputRegister(int address) const;
+    
+    ModbusError getMultipleCoils(int startAddress, int count, bool* destination) const;
+    ModbusError getMultipleDiscreteInputs(int startAddress, int count, bool* destination) const;
+    ModbusError getMultipleInputRegisters(int startAddress, int count, uint16_t* destination) const;
+    ModbusError getMultipleHoldingRegisters(int startAddress, int count, uint16_t* destination) const;
 
     // High-level functions: readAll and writeAll update the internal buffers.
     ModbusError readAll();
